@@ -1874,6 +1874,13 @@ void fragment_shader(in SceneData scene_data) {
 		vec3 ref_vec = normalize(reflect(-view, bent_normal));
 		ref_vec = mix(ref_vec, bent_normal, roughness * roughness);
 
+		uint sorted_reflection_indexes[32];
+		int sorted_count = 0;
+
+		for (uint i = 0; i < 32; i++) {
+			sorted_reflection_indexes[i] = 0;
+		}
+
 		for (uint i = item_from; i < item_to; i++) {
 			uint mask = cluster_buffer.data[cluster_reflection_offset + i];
 			mask &= cluster_get_range_clip_mask(i, item_min, item_max);
@@ -1897,8 +1904,44 @@ void fragment_shader(in SceneData scene_data) {
 					continue; //not masked
 				}
 
-				reflection_process(reflection_index, vertex, ref_vec, normal, roughness, ambient_light, specular_light, ambient_accum, reflection_accum);
+				if (sorted_count >= 32) {
+					break;
+				}
+
+				vec3 box_extents = reflections.data[reflection_index].box_extents;
+				vec3 local_pos = (reflections.data[reflection_index].local_matrix * vec4(vertex, 1.0)).xyz;
+
+				if (any(greaterThan(abs(local_pos), box_extents))) { // Out of probe AAB.
+					continue;
+				}
+
+				// Sorted insertion.
+				int insert_pos = sorted_count;
+				float probe_size = length(box_extents);
+
+				for (int i = sorted_count - 1; i >= 0; i--) {
+					uint current_index = sorted_reflection_indexes[i];
+					float current_size = length(reflections.data[current_index].box_extents);
+
+					if (probe_size < current_size) {
+						sorted_reflection_indexes[i + 1] = current_index;
+						insert_pos = i;
+					} else {
+						insert_pos = i + 1;
+						break;
+					}
+				}
+
+				sorted_reflection_indexes[insert_pos] = reflection_index;
+				sorted_count += 1;
 			}
+		}
+
+		for (uint i = 0; i < sorted_count; i++) {
+			if (reflection_accum.a >= 1.0 && ambient_accum.a >= 1.0) {
+				break;
+			}
+			reflection_process(sorted_reflection_indexes[i], vertex, ref_vec, normal, roughness, ambient_light, specular_light, ambient_accum, reflection_accum);
 		}
 
 		if (reflection_accum.a > 0.0) {

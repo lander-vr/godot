@@ -1361,10 +1361,49 @@ void main() {
 		vec3 ref_vec = normalize(reflect(-view, bent_normal));
 		ref_vec = mix(ref_vec, bent_normal, roughness * roughness);
 
+		uint sorted_reflection_indexes[32];
+		int sorted_count = 0;
+
 		uvec2 reflection_indices = instances.data[draw_call.instance_index].reflection_probes;
 		for (uint i = 0; i < sc_reflection_probes(); i++) {
 			uint reflection_index = (i > 3) ? ((reflection_indices.y >> ((i - 4) * 8)) & 0xFF) : ((reflection_indices.x >> (i * 8)) & 0xFF);
-			reflection_process(reflection_index, vertex, ref_vec, bent_normal, roughness, ambient_light, specular_light, ambient_accum, reflection_accum);
+
+			if (sorted_count >= 32) {
+				break;
+			}
+
+			vec3 box_extents = reflections.data[reflection_index].box_extents;
+			vec3 local_pos = (reflections.data[reflection_index].local_matrix * vec4(vertex, 1.0)).xyz;
+			if (any(greaterThan(abs(local_pos), box_extents))) { // Out of probe AAB.
+				continue;
+			}
+
+			// Sorted insertion.
+			int insert_pos = sorted_count;
+			float probe_size = length(box_extents);
+
+			for (int i = sorted_count - 1; i >= 0; i--) {
+				uint current_index = sorted_reflection_indexes[i];
+				float current_size = length(reflections.data[current_index].box_extents);
+
+				if (probe_size < current_size) {
+					sorted_reflection_indexes[i + 1] = current_index;
+					insert_pos = i;
+				} else {
+					insert_pos = i + 1;
+					break;
+				}
+			}
+
+			sorted_reflection_indexes[insert_pos] = reflection_index;
+			sorted_count += 1;
+		}
+
+		for (uint i = 0; i < sorted_count; i++) {
+			if (reflection_accum.a >= 1.0 && ambient_accum.a >= 1.0) {
+				break;
+			}
+			reflection_process(sorted_reflection_indexes[i], vertex, ref_vec, normal, roughness, ambient_light, specular_light, ambient_accum, reflection_accum);
 		}
 
 		if (reflection_accum.a > 0.0) {

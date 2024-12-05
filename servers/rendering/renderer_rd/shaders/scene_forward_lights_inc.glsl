@@ -871,18 +871,16 @@ void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, 
 	vec3 box_extents = reflections.data[ref_index].box_extents;
 	vec3 local_pos = (reflections.data[ref_index].local_matrix * vec4(vertex, 1.0)).xyz;
 
-	if (any(greaterThan(abs(local_pos), box_extents))) { //out of the reflection box
-		return;
-	}
-
 	vec3 inner_pos = abs(local_pos / box_extents);
 	float blend = max(inner_pos.x, max(inner_pos.y, inner_pos.z));
 	//make blend more rounded
 	blend = mix(length(inner_pos), blend, blend);
 	blend *= blend;
 	blend = max(0.0, 1.0 - blend);
+	float reflection_blend = max(0.0, blend - reflection_accum.a);
+	float ambient_blend = max(0.0, blend - ambient_accum.a);
 
-	if (reflections.data[ref_index].intensity > 0.0) { // compute reflection
+	if (reflections.data[ref_index].intensity > 0.0 && reflection_accum.a < 1.0) { // compute reflection
 
 		vec3 local_ref_vec = (reflections.data[ref_index].local_matrix * vec4(ref_vec, 0.0)).xyz;
 
@@ -903,47 +901,53 @@ void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, 
 
 		reflection.rgb = textureLod(samplerCubeArray(reflection_atlas, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec4(local_ref_vec, reflections.data[ref_index].index), sqrt(roughness) * MAX_ROUGHNESS_LOD).rgb * sc_luminance_multiplier();
 		reflection.rgb *= reflections.data[ref_index].exposure_normalization;
+		reflection.a = reflection_blend;
+
 		if (reflections.data[ref_index].exterior) {
-			reflection.rgb = mix(specular_light, reflection.rgb, blend);
+			reflection.rgb = mix(specular_light, reflection.rgb, reflection_blend);
 		}
 
-		reflection.rgb *= reflections.data[ref_index].intensity; //intensity
-		reflection.a = blend;
+		reflection.rgb *= reflections.data[ref_index].intensity;
 		reflection.rgb *= reflection.a;
 
 		reflection_accum += reflection;
 	}
 
-	switch (reflections.data[ref_index].ambient_mode) {
-		case REFLECTION_AMBIENT_DISABLED: {
-			//do nothing
-		} break;
-		case REFLECTION_AMBIENT_ENVIRONMENT: {
-			//do nothing
-			vec3 local_amb_vec = (reflections.data[ref_index].local_matrix * vec4(normal, 0.0)).xyz;
+	if (ambient_accum.a < 1.0) {
+		switch (reflections.data[ref_index].ambient_mode) {
+			case REFLECTION_AMBIENT_DISABLED: {
+				//do nothing
+			} break;
+			case REFLECTION_AMBIENT_ENVIRONMENT: {
+				//do nothing
+				vec3 local_amb_vec = (reflections.data[ref_index].local_matrix * vec4(normal, 0.0)).xyz;
 
-			vec4 ambient_out;
+				vec4 ambient_out;
 
-			ambient_out.rgb = textureLod(samplerCubeArray(reflection_atlas, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec4(local_amb_vec, reflections.data[ref_index].index), MAX_ROUGHNESS_LOD).rgb;
-			ambient_out.rgb *= reflections.data[ref_index].exposure_normalization;
-			ambient_out.a = blend;
-			if (reflections.data[ref_index].exterior) {
-				ambient_out.rgb = mix(ambient_light, ambient_out.rgb, blend);
-			}
+				ambient_out.rgb = textureLod(samplerCubeArray(reflection_atlas, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec4(local_amb_vec, reflections.data[ref_index].index), MAX_ROUGHNESS_LOD).rgb;
+				ambient_out.rgb *= reflections.data[ref_index].exposure_normalization;
+				ambient_out.a = ambient_blend;
 
-			ambient_out.rgb *= ambient_out.a;
-			ambient_accum += ambient_out;
-		} break;
-		case REFLECTION_AMBIENT_COLOR: {
-			vec4 ambient_out;
-			ambient_out.a = blend;
-			ambient_out.rgb = reflections.data[ref_index].ambient;
-			if (reflections.data[ref_index].exterior) {
-				ambient_out.rgb = mix(ambient_light, ambient_out.rgb, blend);
-			}
-			ambient_out.rgb *= ambient_out.a;
-			ambient_accum += ambient_out;
-		} break;
+				if (reflections.data[ref_index].exterior) {
+					ambient_out.rgb = mix(ambient_light, ambient_out.rgb, ambient_blend);
+				}
+
+				ambient_out.rgb *= ambient_out.a;
+				ambient_accum += ambient_out;
+			} break;
+			case REFLECTION_AMBIENT_COLOR: {
+				vec4 ambient_out;
+				ambient_out.rgb = reflections.data[ref_index].ambient;
+				ambient_out.a = ambient_blend;
+
+				if (reflections.data[ref_index].exterior) {
+					ambient_out.rgb = mix(ambient_light, ambient_out.rgb, ambient_blend);
+				}
+				ambient_out.rgb *= ambient_out.a;
+
+				ambient_accum += ambient_out;
+			} break;
+		}
 	}
 }
 
