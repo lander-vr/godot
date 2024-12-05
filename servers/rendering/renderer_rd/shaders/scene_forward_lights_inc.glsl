@@ -906,9 +906,10 @@ void light_process_spot(uint idx, vec3 vertex, vec3 eye_vec, vec3 normal, vec3 v
 			diffuse_light, specular_light);
 }
 
-void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, float roughness, vec3 ambient_light, vec3 specular_light, inout vec4 ambient_accum, inout vec4 reflection_accum) {
+void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, float roughness, vec3 ambient_light, vec3 specular_light, inout vec4 ambient_accum, inout vec4 reflection_accum, inout float probe_size_tracker) {
 	vec3 box_extents = reflections.data[ref_index].box_extents;
 	vec3 local_pos = (reflections.data[ref_index].local_matrix * vec4(vertex, 1.0)).xyz;
+	bool higher_priority = false;
 
 	if (any(greaterThan(abs(local_pos), box_extents))) { //out of the reflection box
 		return;
@@ -917,9 +918,30 @@ void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, 
 	vec3 inner_pos = abs(local_pos / box_extents);
 	float blend = max(inner_pos.x, max(inner_pos.y, inner_pos.z));
 	//make blend more rounded
-	blend = mix(length(inner_pos), blend, blend);
+	// blend = mix(length(inner_pos), blend, blend);
 	blend *= blend;
 	blend = max(0.0, 1.0 - blend);
+	blend *= 2;
+	blend = clamp(blend, 0.0, 1.0);
+
+	float probe_size = length(box_extents);
+	if (probe_size > probe_size_tracker) {
+		blend *= 1 - reflection_accum.a;
+		blend = clamp(blend, 0.0, 1.0);
+
+		if (blend == 0.0) {
+			return;
+		}
+
+		// Set an initial size value if tracker hasn't been initialized yet.
+		if (probe_size_tracker == 0.0) {
+			probe_size_tracker = probe_size;
+		}
+	} else if (probe_size < probe_size_tracker) {
+		reflection_accum *= 1 - blend;
+		ambient_accum *= 1 - blend;
+		probe_size_tracker = probe_size; // Set new smallest probe.
+	}
 
 	if (reflections.data[ref_index].intensity > 0.0) { // compute reflection
 
@@ -942,15 +964,16 @@ void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, 
 
 		reflection.rgb = textureLod(samplerCubeArray(reflection_atlas, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec4(local_ref_vec, reflections.data[ref_index].index), sqrt(roughness) * MAX_ROUGHNESS_LOD).rgb * sc_luminance_multiplier();
 		reflection.rgb *= reflections.data[ref_index].exposure_normalization;
+		reflection.a = blend;
+
 		if (reflections.data[ref_index].exterior) {
 			reflection.rgb = mix(specular_light, reflection.rgb, blend);
 		}
 
-		reflection.rgb *= reflections.data[ref_index].intensity; //intensity
-		reflection.a = blend;
+		reflection.rgb *= reflections.data[ref_index].intensity; //intensity -> Shouldn't this be on the .a as well? Makes sense to move this to the next line.
 		reflection.rgb *= reflection.a;
 
-		reflection_accum += reflection;
+		reflection_accum = mix(reflection_accum, reflection, blend);
 	}
 
 	switch (reflections.data[ref_index].ambient_mode) {
@@ -966,22 +989,24 @@ void reflection_process(uint ref_index, vec3 vertex, vec3 ref_vec, vec3 normal, 
 			ambient_out.rgb = textureLod(samplerCubeArray(reflection_atlas, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec4(local_amb_vec, reflections.data[ref_index].index), MAX_ROUGHNESS_LOD).rgb;
 			ambient_out.rgb *= reflections.data[ref_index].exposure_normalization;
 			ambient_out.a = blend;
+
 			if (reflections.data[ref_index].exterior) {
 				ambient_out.rgb = mix(ambient_light, ambient_out.rgb, blend);
 			}
 
 			ambient_out.rgb *= ambient_out.a;
-			ambient_accum += ambient_out;
+			ambient_accum = mix(ambient_accum, ambient_out, blend);
 		} break;
 		case REFLECTION_AMBIENT_COLOR: {
 			vec4 ambient_out;
-			ambient_out.a = blend;
 			ambient_out.rgb = reflections.data[ref_index].ambient;
+			ambient_out.a = blend;
+
 			if (reflections.data[ref_index].exterior) {
 				ambient_out.rgb = mix(ambient_light, ambient_out.rgb, blend);
 			}
 			ambient_out.rgb *= ambient_out.a;
-			ambient_accum += ambient_out;
+			ambient_accum = mix(ambient_accum, ambient_out, blend);
 		} break;
 	}
 }
